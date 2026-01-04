@@ -16,9 +16,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - arch: x86_64
-            sdk_url_path: https://downloads.openwrt.org/releases/24.10.2/targets/x86/64
-            sdk_name: -sdk-24.10.2-x86-64_
+          - arch: mipsel_24kc
+            sdk_url_path: https://downloads.openwrt.org/releases/24.10.2/targets/ramips/mt7621
+            sdk_name: sdk-24.10.2-ramips-mt7621
 
     env:
       SDK_URL_PATH: ${{ matrix.sdk_url_path }}
@@ -60,7 +60,7 @@ jobs:
           echo "CACHE_DIR_DL=$CACHE_DIR_DL" >> $GITHUB_ENV
           echo "CACHE_DIR_FEEDS=$CACHE_DIR_FEEDS" >> $GITHUB_ENV
           echo "SDK_HOME=$(mktemp -d)" >> $GITHUB_ENV
-      - name: Download and Unzip SDK
+      - name: Download and Verify SDK
         run: |
           cd "$CACHE_DIR_SDK"
           if ! ( wget -q -O - "$SDK_URL_PATH/sha256sums" | grep -- "$SDK_NAME" > sha256sums.small 2>/dev/null ) ; then
@@ -68,27 +68,49 @@ jobs:
             exit 1
           fi
           SDK_FILE="$(cat sha256sums.small | cut -d' ' -f2 | sed 's/*//g')"
+          # Проверяем, есть ли уже файл и совпадает ли его хеш-сумма
           if ! sha256sum -c ./sha256sums.small >/dev/null 2>&1 ; then
+            echo "SDK not found or checksum mismatch. Downloading..."
             wget -q -O "$SDK_FILE" "$SDK_URL_PATH/$SDK_FILE"
+            # Повторная проверка после скачивания
             if ! sha256sum -c ./sha256sums.small >/dev/null 2>&1 ; then
-              echo "::error::SDK can not be verified!"
+              echo "::error::SDK can not be verified after download!"
               exit 1
             fi
+          else
+            echo "SDK found in cache and checksum is valid."
           fi
+          # Сохраняем имя файла для следующих шагов
+          echo "SDK_FILE=$SDK_FILE" >> $GITHUB_ENV
           cd -
-          file "$CACHE_DIR_SDK/$SDK_FILE"
-          7z x "$CACHE_DIR_SDK/$SDK_FILE" -so | tar -C "$SDK_HOME" -xvf - --strip=1
-          cd "$SDK_HOME"
+
+      - name: Extract SDK
+        run: |
+          echo "Extracting SDK file: ${{ env.CACHE_DIR_SDK }}/${{ env.SDK_FILE }}"
+          file "${{ env.CACHE_DIR_SDK }}/${{ env.SDK_FILE }}"
+          7z x "${{ env.CACHE_DIR_SDK }}/${{ env.SDK_FILE }}" -so | tar -C "$SDK_HOME" -xvf - --strip=1
+          echo "SDK extracted to ${{ env.SDK_HOME }}"
+
+      - name: Link Cache Directories
+        working-directory: ${{ env.SDK_HOME }}
+        run: |
+          # Удаляем стандартные папки, если они есть
           test -d "dl" && rm -rf "dl" || true
           test -d "feeds" && rm -rf "feeds" || true
+          # Создаем симлинки на кешированные папки
           ln -s "$CACHE_DIR_DL" "dl"
           ln -s "$CACHE_DIR_FEEDS" "feeds"
+          echo "Cache directories linked."
+
+      - name: Configure Feeds
+        working-directory: ${{ env.SDK_HOME }}
+        run: |
           cp feeds.conf.default feeds.conf
           sed -i 's#git.openwrt.org/openwrt/openwrt#github.com/openwrt/openwrt#' feeds.conf
           sed -i 's#git.openwrt.org/feed/packages#github.com/openwrt/packages#' feeds.conf
           sed -i 's#git.openwrt.org/project/luci#github.com/openwrt/luci#' feeds.conf
           sed -i 's#git.openwrt.org/feed/telephony#github.com/openwrt/telephony#' feeds.conf
-          cd -
+          echo "Feeds configured to use GitHub mirrors."
       - name: Update and Install Packages
         run: |
           cd "$SDK_HOME"
@@ -113,23 +135,3 @@ jobs:
           files: "*.ipk"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  notify:
-    name: Notify Release Publish
-    runs-on: ubuntu-latest
-    env:
-      TRIGGER_URL: ${{ secrets.TRIGGER_URL }}
-      TRIGGER_TOKEN: ${{ secrets.TRIGGER_TOKEN }}
-    needs: release
-    steps:
-      - name: Notify Jenkins
-        run: |
-          if [ -z "$TRIGGER_URL" ] ; then
-            echo "::warning::No trigger url found, skip..."
-            exit 0
-          fi
-          curl -X POST \
-              -H "Content-Type: application/json; charset=utf-8" \
-              -H "Authorization: Bearer $TRIGGER_TOKEN" \
-              -d "{\"event\":\"release\",\"repository\":\"${{ github.repository }}\",\"ref\":\"${{ github.ref }}\"}" \
-              "$TRIGGER_URL" || true
