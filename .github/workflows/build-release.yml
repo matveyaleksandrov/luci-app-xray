@@ -63,7 +63,31 @@ jobs:
       - name: Download and Verify SDK
         run: |
           cd "$CACHE_DIR_SDK"
+          
+          echo "Fetching checksums to find the SDK filename..."
+          # Этот wget можно оставить с -q, так как он просто получает текстовый файл
+          if ! ( wget -q -O - "$SDK_URL_PATH/sha256sums" | grep -- "$SDK_NAME" > sha256sums.small 2>/dev/null ) ; then
+            echo "::error::Can not find ${SDK_NAME} file in sha256sums."
+            exit 1
+          fi
+
+          # Получаем имя файла SDK
+          SDK_FILE="$(cat sha256sums.small | cut -d' ' -f2 | sed 's/*//g')"
+          echo "SDK filename is: $SDK_FILE"
+
+          # Принудительно скачиваем SDK, показывая прогресс (флаг -q убран)
+          echo "Downloading SDK..."
           wget -O "$SDK_FILE" "$SDK_URL_PATH/$SDK_FILE"
+
+          # Проверяем целостность скачанного файла
+          echo "Verifying downloaded SDK..."
+          if ! sha256sum -c ./sha256sums.small >/dev/null 2>&1 ; then
+            echo "::error::SDK can not be verified after download!"
+            exit 1
+          fi
+          echo "SDK verified successfully."
+
+          # Сохраняем имя файла для следующих шагов
           echo "SDK_FILE=$SDK_FILE" >> $GITHUB_ENV
           cd -
 
